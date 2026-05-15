@@ -9,26 +9,35 @@ try:
 except ImportError:
     PYGAME_AVAILABLE = False
 
+# Robust import fix for Windows AttributeErrors
+try:
+    import mediapipe.python.solutions.hands as mp_hands
+    import mediapipe.python.solutions.drawing_utils as mp_drawing
+except ImportError:
+    import mediapipe.solutions.hands as mp_hands
+    import mediapipe.solutions.drawing_utils as mp_drawing
+
 class FireHandPro:
     def __init__(self):
         # Initialize MediaPipe
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            min_detection_confidence=0.8, 
-            min_tracking_confidence=0.8
+        self.hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=2,
+            min_detection_confidence=0.7, 
+            min_tracking_confidence=0.7
         )
+
         
         # Particle System State
         self.particles = []
-        self.fire_active = False
-        self.intensity = 0.0 # Used for smooth fade in/out
+        
+        # Per-hand state: {hand_id: {'active': bool, 'intensity': float, 'prev_pos': [x,y], 'velocity': [x,y]}}
+        self.hand_states = {}
         
         # Audio Initialization
         if PYGAME_AVAILABLE:
             try:
                 pygame.mixer.init()
-                # PRO TIP: Save a sound as 'fire_whoosh.wav' and uncomment below
-                # self.fire_sound = pygame.mixer.Sound("fire_whoosh.wav") 
                 self.sound_playing = False
             except Exception as e:
                 print(f"Warning: Could not initialize pygame mixer: {e}")
@@ -36,127 +45,173 @@ class FireHandPro:
         else:
             self.sound_playing = False
 
-    def get_fire_color(self, life):
-        """Returns a BGR color based on particle life (1.0 to 0.0)."""
-        if life > 0.8: return (220, 255, 255) # Intense White/Yellow
-        if life > 0.4: return (0, 140, 255)   # Vibrant Orange
+    def get_fire_color(self, life, p_type='fire'):
+        """Returns a BGR color based on particle life and type."""
+        if p_type == 'spark':
+            return (150, 255, 255) if life > 0.5 else (0, 200, 255)
+            
+        if life > 0.8: return (200, 255, 255) # Intense White/Yellow
+        if life > 0.4: return (0, 120, 255)   # Vibrant Orange
         if life > 0.1: return (0, 0, 180)     # Deep Red
-        return (60, 60, 60)                   # Smoke Grey
+        return (40, 40, 40)                   # Smoke Grey
 
-    def update_particles(self, img, center):
+    def update_particles(self, img, active_hands_info):
         """Updates particle positions and draws them with alpha blending."""
-        # Smoothly transition intensity
-        target = 1.0 if self.fire_active else 0.0
-        self.intensity += (target - self.intensity) * 0.15 
-        
         overlay = img.copy()
         
-        # Sound Control logic (Ready for user to uncomment Sound init)
-        if hasattr(self, 'fire_sound'):
-            if self.fire_active and not self.sound_playing:
-                self.fire_sound.play(-1) # Loop
-                self.sound_playing = True
-            elif not self.fire_active and self.sound_playing:
-                self.fire_sound.stop()
-                self.sound_playing = False
+        # 1. Spawn new particles for each active hand
+        for hand_info in active_hands_info:
+            center = hand_info['center']
+            vel_inh = hand_info['velocity']
+            intensity = hand_info['intensity']
+            
+            if intensity > 0.05:
+                # Spawn fire particles
+                num_spawns = int(25 * intensity)
+                for _ in range(num_spawns):
+                    self.particles.append({
+                        'pos': [
+                            center[0] + random.randint(-20, 20), 
+                            center[1] + random.randint(-10, 10)
+                        ],
+                        'vel': [
+                            random.uniform(-1.5, 1.5) - (vel_inh[0] * 0.2), 
+                            random.uniform(-7, -3) - (vel_inh[1] * 0.2)
+                        ],
+                        'life': 1.0,
+                        'size': random.randint(3, 12),
+                        'type': 'fire'
+                    })
+                
+                # Spawn Sparks
+                if random.random() < 0.3 * intensity:
+                    self.particles.append({
+                        'pos': [center[0], center[1]],
+                        'vel': [random.uniform(-5, 5), random.uniform(-10, -5)],
+                        'life': 1.0,
+                        'size': random.randint(1, 3),
+                        'type': 'spark'
+                    })
 
-        if self.intensity > 0.01:
-            # Spawn new fire particles
-            # More intensity = more particles
-            num_spawns = int(20 * self.intensity)
-            for _ in range(num_spawns):
-                self.particles.append({
-                    'pos': [
-                        center[0] + random.randint(-25, 25), 
-                        center[1] + random.randint(-15, 15)
-                    ],
-                    'vel': [
-                        random.uniform(-2.0, 2.0), 
-                        random.uniform(-8, -3) # Moving UP
-                    ],
-                    'life': 1.0,
-                    'size': random.randint(4, 14)
-                })
-
-        # Update & Draw particles
+        # 2. Update & Draw all particles
         new_particles = []
+        # Calculate max intensity for overall alpha blending
+        intensities = [h['intensity'] for h in active_hands_info]
+        max_intensity = max(intensities) if intensities else 0
+        
         for p in self.particles:
-            # Apply velocity
-            p['pos'][0] += p['vel'][0]
+            # Apply velocity + some "turbulence"
+            p['pos'][0] += p['vel'][0] + random.uniform(-0.5, 0.5)
             p['pos'][1] += p['vel'][1]
             
             # Reduce life
-            p['life'] -= 0.025
+            decay = 0.02 if p['type'] == 'spark' else 0.03
+            p['life'] -= decay
             
             if p['life'] > 0:
-                color = self.get_fire_color(p['life'])
+                color = self.get_fire_color(p['life'], p['type'])
                 # Size shrinks as life ends
-                size = int(p['size'] * p['life'] * (1 + self.intensity))
+                size = int(p['size'] * p['life'] * (1 + max_intensity))
                 if size > 0:
                     cv2.circle(overlay, (int(p['pos'][0]), int(p['pos'][1])), size, color, -1)
                 new_particles.append(p)
         
         self.particles = new_particles
         
-        # Add a subtle "Glow" by blending the overlay
-        # Higher intensity = more opacity
-        alpha = 0.7 * self.intensity
-        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        # 3. Blend Overlay
+        alpha = min(0.8, 0.6 * max_intensity + 0.1) if max_intensity > 0 else 0
+        if alpha > 0:
+            cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+
+    def is_finger_up(self, lm_list, tip, base):
+        """Robust check if finger is extended."""
+        return lm_list[tip][1] < lm_list[base][1]
 
     def process_frame(self, img):
-        """Main processing loop for hand detection and effect triggering."""
+        """Main processing loop for multi-hand detection and effect triggering."""
+        h, w, _ = img.shape
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         results = self.hands.process(img_rgb)
         
+        current_active_hands = []
+        
         if results.multi_hand_landmarks:
-            hand_lms = results.multi_hand_landmarks[0]
-            h, w, _ = img.shape
-            
-            # 1. Extract Landmark Positions
-            lm_list = []
-            for id, lm in enumerate(hand_lms.landmark):
-                lm_list.append([int(lm.x * w), int(lm.y * h)])
-            
-            # 2. Gesture Detection (Counting Fingers)
-            # Logic: If finger tip is higher than joint below it, it's UP
-            fingers = []
-            # Thumb (Horizontal comparison)
-            if lm_list[4][0] > lm_list[3][0]: fingers.append(1)
-            else: fingers.append(0)
-            
-            # 4 Fingers (Vertical comparison)
-            for tip in [8, 12, 16, 20]:
-                if lm_list[tip][1] < lm_list[tip-2][1]: fingers.append(1)
+            for i, hand_lms in enumerate(results.multi_hand_landmarks):
+                # Extract Landmark Positions
+                lm_list = []
+                for lm in hand_lms.landmark:
+                    lm_list.append([int(lm.x * w), int(lm.y * h)])
+                
+                # Robust Gesture Detection
+                fingers = []
+                # Thumb logic: Distance between thumb tip and pinky base
+                # This is more robust than simple horizontal check
+                thumb_dist = np.linalg.norm(np.array(lm_list[4]) - np.array(lm_list[17]))
+                palm_size = np.linalg.norm(np.array(lm_list[0]) - np.array(lm_list[9]))
+                if thumb_dist > palm_size * 0.8: fingers.append(1)
                 else: fingers.append(0)
-            
-            # 3. Fire Logic: All 5 up = FIRE
-            extended_count = sum(fingers)
-            if extended_count == 5:
-                self.fire_active = True
-            elif extended_count <= 1: # Fist or just thumb
-                self.fire_active = False
-            
-            # 4. Render Effect
-            # Landmark 9 is the base of the middle finger (good center point)
-            center = lm_list[9]
-            self.update_particles(img, center)
-            
-            # 5. Dashboard UI
-            status_color = (0, 215, 255) if self.fire_active else (150, 150, 150)
-            # Semi-transparent background for text
-            rect_overlay = img.copy()
-            cv2.rectangle(rect_overlay, (20, 30), (280, 100), (0, 0, 0), -1)
-            cv2.addWeighted(rect_overlay, 0.5, img, 0.5, 0, img)
-            
-            cv2.putText(img, "POWER STATUS", (40, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-            cv2.putText(img, "MAX FIRE" if self.fire_active else "STBY", 
-                        (40, 90), cv2.FONT_HERSHEY_TRIPLEX, 1.0, status_color, 2)
+                
+                for tip, base in [(8,6), (12,10), (16,14), (20,18)]:
+                    fingers.append(1 if self.is_finger_up(lm_list, tip, base) else 0)
+                
+                # Fire Logic: 4 or more fingers up triggers fire
+                extended_count = sum(fingers)
+                is_active = extended_count >= 4
+                
+                # Tracking State
+                hand_id = i
+                if hand_id not in self.hand_states:
+                    self.hand_states[hand_id] = {'intensity': 0.0, 'prev_pos': lm_list[9], 'velocity': [0, 0]}
+                
+                state = self.hand_states[hand_id]
+                target_intensity = 1.0 if is_active else 0.0
+                state['intensity'] += (target_intensity - state['intensity']) * 0.2
+                
+                # Calculate Velocity (for trailing effect)
+                curr_pos = lm_list[9]
+                state['velocity'] = [curr_pos[0] - state['prev_pos'][0], curr_pos[1] - state['prev_pos'][1]]
+                state['prev_pos'] = curr_pos
+                
+                current_active_hands.append({
+                    'center': curr_pos,
+                    'intensity': state['intensity'],
+                    'velocity': state['velocity']
+                })
+
+        # Update and Render
+        self.update_particles(img, current_active_hands)
+        
+        # Dashboard UI
+        any_active = any(h['intensity'] > 0.5 for h in current_active_hands)
+        status_color = (0, 215, 255) if any_active else (150, 150, 150)
+        
+        rect_overlay = img.copy()
+        cv2.rectangle(rect_overlay, (20, 30), (320, 100), (0, 0, 0), -1)
+        cv2.addWeighted(rect_overlay, 0.5, img, 0.5, 0, img)
+        
+        cv2.putText(img, "FIRE HAND PRO v2.0", (40, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        status_text = "DUAL IGNITION" if len(current_active_hands) > 1 and any_active else ("MAX FIRE" if any_active else "STBY")
+        cv2.putText(img, status_text, (40, 90), cv2.FONT_HERSHEY_TRIPLEX, 0.9, status_color, 2)
 
         return img
 
 def main():
-    # Attempt to open webcam
-    cap = cv2.VideoCapture(0)
+    # Try different indices in case 0 is not the right camera
+    cap = None
+    for idx in [0, 1, 2]:
+        print(f"Attempting to open camera at index {idx}...")
+        temp_cap = cv2.VideoCapture(idx)
+        if temp_cap.isOpened():
+            success, _ = temp_cap.read()
+            if success:
+                cap = temp_cap
+                print(f"Successfully connected to camera {idx}!")
+                break
+        temp_cap.release()
+    
+    if cap is None:
+        print("ERROR: Could not find an active webcam. Please check your connections and permissions.")
+        return
     
     # Set to HD for better quality if supported
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -165,9 +220,9 @@ def main():
     app = FireHandPro()
     p_time = 0
     
-    print("--- Fire Hand Pro Started ---")
+    print("--- Fire Hand Pro v2.0 Started ---")
     print("Instructions:")
-    print("- Open hand (5 fingers) to trigger FIRE.")
+    print("- Open hand (4-5 fingers) to trigger FIRE.")
     print("- Close fist to stop.")
     print("- Press 'q' to quit.")
     
@@ -190,7 +245,7 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Display Result
-        cv2.imshow("Fire Hand Pro - v1.0", processed_frame)
+        cv2.imshow("Fire Hand Pro - v2.0", processed_frame)
         
         # Exit on 'q'
         if cv2.waitKey(1) & 0xFF == ord('q'):
