@@ -199,16 +199,23 @@ def main():
     # Try different indices in case 0 is not the right camera
     cap = None
     for idx in [0, 1, 2]:
-        print(f"Attempting to open camera at index {idx} with DirectShow...")
-        # CAP_DSHOW is often more stable on Windows
-        temp_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if temp_cap.isOpened():
-            success, _ = temp_cap.read()
-            if success:
-                cap = temp_cap
-                print(f"Successfully connected to camera {idx}!")
-                break
-        temp_cap.release()
+        for backend in [None, cv2.CAP_DSHOW, cv2.CAP_MSMF]:
+            backend_name = "Default" if backend is None else ("DSHOW" if backend == cv2.CAP_DSHOW else "MSMF")
+            print(f"Attempting camera {idx} with {backend_name}...")
+            
+            if backend is None:
+                temp_cap = cv2.VideoCapture(idx)
+            else:
+                temp_cap = cv2.VideoCapture(idx, backend)
+                
+            if temp_cap.isOpened():
+                success, _ = temp_cap.read()
+                if success:
+                    cap = temp_cap
+                    print(f"Successfully connected to camera {idx} using {backend_name}!")
+                    break
+            temp_cap.release()
+        if cap: break
     
     if cap is None:
         print("ERROR: Could not find an active webcam. Please check your connections and permissions.")
