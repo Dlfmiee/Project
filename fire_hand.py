@@ -221,9 +221,13 @@ def main():
         print("ERROR: Could not find an active webcam. Please check your connections and permissions.")
         return
     
-    # Set to HD for better quality if supported
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    # Use default resolution first for compatibility
+    # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    
+    actual_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    actual_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    print(f"Camera resolution: {int(actual_w)}x{int(actual_h)}")
     
     app = FireHandPro()
     p_time = 0
@@ -235,28 +239,37 @@ def main():
     print("- Press 'q' to quit.")
     
     while True:
-        success, frame = cap.read()
-        if not success:
-            print("Failed to read from webcam.")
-            break
+        try:
+            success, frame = cap.read()
+            if not success or frame is None:
+                print("Warning: Failed to read from webcam. Retrying...")
+                time.sleep(0.1)
+                continue
             
-        frame = cv2.flip(frame, 1) # Mirror for natural feel
-        
-        # Core processing
-        processed_frame = app.process_frame(frame)
-        
-        # Calculate FPS
-        c_time = time.time()
-        fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
-        p_time = c_time
-        cv2.putText(processed_frame, f"FPS: {int(fps)}", (1150, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        # Display Result
-        cv2.imshow("Fire Hand Pro - v2.0", processed_frame)
-        
-        # Exit on 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+            if frame.size == 0:
+                continue
+                
+            frame = cv2.flip(frame, 1) # Mirror for natural feel
+            
+            # Core processing
+            processed_frame = app.process_frame(frame)
+            
+            # Calculate FPS
+            c_time = time.time()
+            fps = 1 / (c_time - p_time) if (c_time - p_time) > 0 else 0
+            p_time = c_time
+            cv2.putText(processed_frame, f"FPS: {int(fps)}", (1150, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Display Result
+            cv2.imshow("Fire Hand Pro - v2.0", processed_frame)
+            
+            # Exit on 'q'
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+                
+        except Exception as e:
+            print(f"Error in main loop: {e}")
             break
 
     cap.release()
