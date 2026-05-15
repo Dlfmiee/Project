@@ -199,8 +199,9 @@ def main():
     # Try different indices in case 0 is not the right camera
     cap = None
     for idx in [0, 1, 2]:
-        print(f"Attempting to open camera at index {idx}...")
-        temp_cap = cv2.VideoCapture(idx)
+        print(f"Attempting to open camera at index {idx} with DirectShow...")
+        # CAP_DSHOW is often more stable on Windows
+        temp_cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
         if temp_cap.isOpened():
             success, _ = temp_cap.read()
             if success:
